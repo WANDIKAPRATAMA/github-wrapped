@@ -66,7 +66,8 @@ def fetch_github_data():
         'total_commits': user_data['contributionsCollection']['totalCommitContributions'],
         'current_streak': calculate_streak(user_data['contributionsCollection']['contributionCalendar']['weeks']),
         'weekly_activity': [day['contributionCount'] for day in last_7_days],
-        'total_disk_kb': sum(repo['diskUsage'] for repo in user_data['repositories']['nodes'])
+        'total_disk_kb': sum(repo['diskUsage'] for repo in user_data['repositories']['nodes']),
+        'total_contributions': user_data['contributionsCollection']['contributionCalendar']['totalContributions']
     }
     return stats
 
@@ -146,7 +147,7 @@ def main():
     estimated_lines = (stats['total_disk_kb'] * 40) + (stats['total_commits'] * 100)
     
     # Calculate average monthly contributions (last year / 12)
-    avg_monthly = int(user_data['contributionsCollection']['contributionCalendar']['totalContributions'] / 12)
+    avg_monthly = int(stats['total_contributions'] / 12)
 
     # Prepare replacements for primary_stats.html
     primary_stats_replacements = {
