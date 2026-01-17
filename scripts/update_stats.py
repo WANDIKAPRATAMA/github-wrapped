@@ -121,17 +121,17 @@ def main():
     # 2. Current Streak
     # 3. Total Repos
     primary_stats_replacements = {
-        r'(<p class="text-\[120px\][^>]*>).*?(</p>)': rf'\1{stats["total_commits"]:,}\2',
-        r'(<p class="text-6xl font-black leading-none">).*?(<span class="text-2xl ml-1">DAYS</span></p>)': rf'\1{stats["current_streak"]}\2',
-        r'(<p class="text-6xl font-black leading-none">)(?!\d+\s*<span).*?(</p>)': rf'\1{stats["total_repos"]}\2'
+        r'(<p class="text-\[120px\][^>]*>).*?(</p>)': rf'\g<1>{stats["total_commits"]:,}\g<2>',
+        r'(<p class="text-6xl font-black leading-none">).*?(<span class="text-2xl ml-1">DAYS</span></p>)': rf'\g<1>{stats["current_streak"]}\g<2>',
+        r'(<p class="text-6xl font-black leading-none">)(?!\d+\s*<span).*?(</p>)': rf'\g<1>{stats["total_repos"]}\g<2>'
     }
 
     # Prepare replacements for analytics.html
     # 1. Stars
     # 2. PRs
     analytics_replacements = {
-        r'(<h4 class="text-2xl font-black uppercase leading-tight">Stars: ).*?(</h4>)': rf'\1{format_number(stats["total_stars"])}\2',
-        r'(<h4 class="text-2xl font-black uppercase leading-tight">PRs: ).*?(</h4>)': rf'\1{stats["total_prs"]}\2'
+        r'(<h4 class="text-2xl font-black uppercase leading-tight">Stars: ).*?(</h4>)': rf'\g<1>{format_number(stats["total_stars"])}\g<2>',
+        r'(<h4 class="text-2xl font-black uppercase leading-tight">PRs: ).*?(</h4>)': rf'\g<1>{stats["total_prs"]}\g<2>'
     }
 
     print("Updating HTML files...")
