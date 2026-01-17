@@ -142,8 +142,11 @@ def main():
 
     print(f"Stats fetched: {stats}")
 
-    # Estimate Lines: Disk usage (KB) * 50 lines/KB as a realistic proxy, plus commit weight
+    # Estimate Lines: Disk usage (KB) * 40 lines/KB as a realistic proxy, plus commit weight
     estimated_lines = (stats['total_disk_kb'] * 40) + (stats['total_commits'] * 100)
+    
+    # Calculate average monthly contributions (last year / 12)
+    avg_monthly = int(user_data['contributionsCollection']['contributionCalendar']['totalContributions'] / 12)
 
     # Prepare replacements for primary_stats.html
     primary_stats_replacements = {
@@ -160,38 +163,37 @@ def main():
     analytics_replacements = {
         'total_stars': (r'(Stars: ).*?(</h4>)', rf'\g<1>{format_number(stats["total_stars"])}\g<2>'),
         'total_prs': (r'(PRs: ).*?(</h4>)', rf'\g<1>{stats["total_prs"]}\g<2>'),
-        'total_lines': (r'(Total_Lines_Committed</p>\s*</div>\s*<p class="text-7xl[^>]*>).*?(</p>)', rf'\g<1>{format_number(estimated_lines)}+\g<2>')
+        'total_lines': (r'(Total_Lines_Committed</p>\s*</div>\s*<p class="text-7xl[^>]*>).*?(</p>)', rf'\g<1>{format_number(estimated_lines)}+\g<2>'),
+        'avg_monthly': (r'(ACTIVITY_FLOW</h3>\s*</div>\s*<div class="text-right">\s*<p class="text-4xl[^>]*>).*?(</p>)', rf'\g<1>{avg_monthly}\g<2>')
     }
     
-    # Add bars replacements (M, T, W, T, F, S, S)
-    # We'll use a specific replacement for the activity flow grid children
-    # This is slightly more complex with regex, let's find the grid and replace the h-[] classes
-    
+    # Update bars manually in analytics.html content
     with open('sections/analytics.html', 'r') as f:
         ana_content = f.read()
     
-    # Find the activity flow grid
     grid_pattern = r'(<div class="grid grid-cols-7 gap-3 h-48 items-end px-2">)(.*?)(</div>)'
     match = re.search(grid_pattern, ana_content, re.DOTALL)
     if match:
         grid_start, grid_inner, grid_end = match.groups()
-        # Find all divs with h-[] classes inside the grid
-        bar_pattern = r'(<div class="[^"]*h-\[).*?(\%?\][^"]*")'
-        bars = re.findall(bar_pattern, grid_inner)
+        # Regex to match each bar's div and its h-[...] class
+        # We look for divs that are direct children of the grid
+        bar_div_pattern = r'(<div class="[^"]*h-\[).*?(\%?\][^"]*")'
         
-        new_inner = grid_inner
-        for i, val in enumerate(scaled_heights):
-            if i < len(bars):
-                # Replace the i-th bar's height
-                # Using a targeted replace for the i-th occurrence is tricky with regex, 
-                # let's do it sequentially
-                target = bars[i][0] + r'.*?' + bars[i][1]
-                new_inner = re.sub(target, f'{bars[i][0]}{val}{bars[i][1]}', new_inner, count=1)
-        
+        # We'll use re.sub with a function to replace each match with the corresponding scaled height
+        bar_index = 0
+        def bar_replacer(m):
+            nonlocal bar_index
+            if bar_index < len(scaled_heights):
+                h = scaled_heights[bar_index]
+                bar_index += 1
+                return f'{m.group(1)}{h}{m.group(2)}'
+            return m.group(0)
+
+        new_inner = re.sub(bar_div_pattern, bar_replacer, grid_inner)
         ana_content = ana_content.replace(grid_inner, new_inner)
+        print(f"  [+] Updated Activity Flow bar chart with heights: {scaled_heights}")
         with open('sections/analytics.html', 'w') as f:
             f.write(ana_content)
-        print("  [+] Updated Activity Flow bar chart.")
 
     print("Updating HTML files...")
     update_html_file('sections/primary_stats.html', primary_stats_replacements)
