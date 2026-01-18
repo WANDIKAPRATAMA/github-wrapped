@@ -5,34 +5,39 @@ from datetime import datetime, timedelta
 
 # Constants
 GITHUB_TOKEN = os.getenv('GH_TOKEN')
-USERNAME = 'rans0'
 
 GRAPHQL_URL = 'https://api.github.com/graphql'
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
-def run_query(query):
-    response = requests.post(GRAPHQL_URL, json={'query': query}, headers=HEADERS)
+def run_query(query, variables=None):
+    response = requests.post(GRAPHQL_URL, json={'query': query, 'variables': variables}, headers=HEADERS)
     if response.status_code == 200:
         return response.json()
     else:
         raise Exception(f"Query failed with code {response.status_code}. {query}")
 
 def fetch_github_data():
+    # 1. Fetch Basic Info and First Batch of Repositories
     query = """
-    {
-      user(login: "%s") {
-        repositories(first: 100, ownerAffiliations: OWNER) {
+    query($cursor: String) {
+      viewer {
+        login
+        createdAt
+        repositories(first: 100, ownerAffiliations: OWNER, after: $cursor) {
           totalCount
           nodes {
             stargazerCount
             diskUsage
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
           }
         }
         pullRequests {
           totalCount
         }
         contributionsCollection {
-          totalCommitContributions
           contributionCalendar {
             totalContributions
             weeks {
@@ -45,14 +50,73 @@ def fetch_github_data():
         }
       }
     }
-    """ % USERNAME
+    """
     
     result = run_query(query)
-    user_data = result['data']['user']
+    viewer_data = result['data']['viewer']
     
-    # Extract last 7 days for Activity Flow
+    total_repos = viewer_data['repositories']['totalCount']
+    total_stars = sum(repo['stargazerCount'] for repo in viewer_data['repositories']['nodes'])
+    total_disk_kb = sum(repo['diskUsage'] for repo in viewer_data['repositories']['nodes'])
+    total_prs = viewer_data['pullRequests']['totalCount']
+    
+    # Handle Repository Pagination
+    has_next_page = viewer_data['repositories']['pageInfo']['hasNextPage']
+    cursor = viewer_data['repositories']['pageInfo']['endCursor']
+    
+    while has_next_page:
+        paginated_query = """
+        query($cursor: String) {
+          viewer {
+            repositories(first: 100, ownerAffiliations: OWNER, after: $cursor) {
+              nodes {
+                stargazerCount
+                diskUsage
+              }
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+            }
+          }
+        }
+        """
+        paginated_result = run_query(paginated_query, variables={"cursor": cursor})
+        repo_nodes = paginated_result['data']['viewer']['repositories']['nodes']
+        total_stars += sum(repo['stargazerCount'] for repo in repo_nodes)
+        total_disk_kb += sum(repo['diskUsage'] for repo in repo_nodes)
+        
+        has_next_page = paginated_result['data']['viewer']['repositories']['pageInfo']['hasNextPage']
+        cursor = paginated_result['data']['viewer']['repositories']['pageInfo']['endCursor']
+
+    # 2. Calculate All-Time Commits
+    start_year = datetime.strptime(viewer_data['createdAt'], '%Y-%m-%dT%H:%M:%SZ').year
+    current_year = datetime.now().year
+    total_commits = 0
+    
+    for year in range(start_year, current_year + 1):
+        year_query = """
+        query($from: DateTime, $to: DateTime) {
+          viewer {
+            contributionsCollection(from: $from, to: $to) {
+              totalCommitContributions
+            }
+          }
+        }
+        """
+        # Define time range for the year
+        start_date = f"{year}-01-01T00:00:00Z"
+        if year == current_year:
+            end_date = datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
+        else:
+            end_date = f"{year}-12-31T23:59:59Z"
+            
+        year_result = run_query(year_query, variables={"from": start_date, "to": end_date})
+        total_commits += year_result['data']['viewer']['contributionsCollection']['totalCommitContributions']
+
+    # Extract last 7 days for Activity Flow (from the first query's collection)
     all_days = []
-    for week in user_data['contributionsCollection']['contributionCalendar']['weeks']:
+    for week in viewer_data['contributionsCollection']['contributionCalendar']['weeks']:
         for day in week['contributionDays']:
             all_days.append(day)
     
@@ -60,14 +124,14 @@ def fetch_github_data():
     last_7_days = all_days[-7:]
     
     stats = {
-        'total_repos': user_data['repositories']['totalCount'],
-        'total_stars': sum(repo['stargazerCount'] for repo in user_data['repositories']['nodes']),
-        'total_prs': user_data['pullRequests']['totalCount'],
-        'total_commits': user_data['contributionsCollection']['totalCommitContributions'],
-        'current_streak': calculate_streak(user_data['contributionsCollection']['contributionCalendar']['weeks']),
+        'total_repos': total_repos,
+        'total_stars': total_stars,
+        'total_prs': total_prs,
+        'total_commits': total_commits,
+        'current_streak': calculate_streak(viewer_data['contributionsCollection']['contributionCalendar']['weeks']),
         'weekly_activity': [day['contributionCount'] for day in last_7_days],
-        'total_disk_kb': sum(repo['diskUsage'] for repo in user_data['repositories']['nodes']),
-        'total_contributions': user_data['contributionsCollection']['contributionCalendar']['totalContributions']
+        'total_disk_kb': total_disk_kb,
+        'total_contributions': viewer_data['contributionsCollection']['contributionCalendar']['totalContributions']
     }
     return stats
 
@@ -134,7 +198,7 @@ def main():
         print("Error: GH_TOKEN not found in environment variables.")
         return
 
-    print(f"Fetching data for {USERNAME}...")
+    print("Fetching comprehensive GitHub data...")
     try:
         stats = fetch_github_data()
     except Exception as e:
@@ -146,8 +210,9 @@ def main():
     # Estimate Lines: Disk usage (KB) * 40 lines/KB as a realistic proxy, plus commit weight
     estimated_lines = (stats['total_disk_kb'] * 40) + (stats['total_commits'] * 100)
     
-    # Calculate average monthly contributions (last year / 12)
-    avg_monthly = int(stats['total_contributions'] / 12)
+    # Calculate average monthly contributions (this year so far)
+    current_month = datetime.now().month
+    avg_monthly = int(stats['total_contributions'] / current_month) if current_month > 0 else stats['total_contributions']
 
     # Prepare replacements for primary_stats.html
     primary_stats_replacements = {
@@ -157,7 +222,6 @@ def main():
     }
 
     # Prepare replacements for analytics.html
-    # Scale activity bars: Max activity in the week sets 90% height
     max_act = max(stats['weekly_activity']) if max(stats['weekly_activity']) > 0 else 1
     scaled_heights = [int((val / max_act) * 90) or 5 for val in stats['weekly_activity']]
     
@@ -169,32 +233,32 @@ def main():
     }
     
     # Update bars manually in analytics.html content
-    with open('sections/analytics.html', 'r') as f:
-        ana_content = f.read()
-    
-    grid_pattern = r'(<div class="grid grid-cols-7 gap-3 h-48 items-end px-2">)(.*?)(</div>)'
-    match = re.search(grid_pattern, ana_content, re.DOTALL)
-    if match:
-        grid_start, grid_inner, grid_end = match.groups()
-        # Regex to match each bar's div and its h-[...] class
-        # We look for divs that are direct children of the grid
-        bar_div_pattern = r'(<div class="[^"]*h-\[).*?(\%?\][^"]*")'
+    try:
+        with open('sections/analytics.html', 'r') as f:
+            ana_content = f.read()
         
-        # We'll use re.sub with a function to replace each match with the corresponding scaled height
-        bar_index = 0
-        def bar_replacer(m):
-            nonlocal bar_index
-            if bar_index < len(scaled_heights):
-                h = scaled_heights[bar_index]
-                bar_index += 1
-                return f'{m.group(1)}{h}{m.group(2)}'
-            return m.group(0)
+        grid_pattern = r'(<div class="grid grid-cols-7 gap-3 h-48 items-end px-2">)(.*?)(</div>)'
+        match = re.search(grid_pattern, ana_content, re.DOTALL)
+        if match:
+            grid_start, grid_inner, grid_end = match.groups()
+            bar_div_pattern = r'(<div class="[^"]*h-\[).*?(\%?\][^"]*")'
+            
+            bar_index = 0
+            def bar_replacer(m):
+                nonlocal bar_index
+                if bar_index < len(scaled_heights):
+                    h = scaled_heights[bar_index]
+                    bar_index += 1
+                    return f'{m.group(1)}{h}{m.group(2)}'
+                return m.group(0)
 
-        new_inner = re.sub(bar_div_pattern, bar_replacer, grid_inner)
-        ana_content = ana_content.replace(grid_inner, new_inner)
-        print(f"  [+] Updated Activity Flow bar chart with heights: {scaled_heights}")
-        with open('sections/analytics.html', 'w') as f:
-            f.write(ana_content)
+            new_inner = re.sub(bar_div_pattern, bar_replacer, grid_inner)
+            ana_content = ana_content.replace(grid_inner, new_inner)
+            print(f"  [+] Updated Activity Flow bar chart with heights: {scaled_heights}")
+            with open('sections/analytics.html', 'w') as f:
+                f.write(ana_content)
+    except FileNotFoundError:
+        print("Warning: sections/analytics.html not found.")
 
     print("Updating HTML files...")
     update_html_file('sections/primary_stats.html', primary_stats_replacements)
